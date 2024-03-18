@@ -32,7 +32,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 	"google.golang.org/protobuf/proto"
 
-	pb "orcanet/market" // Adjust the import path to where your protobuf definitions are compiled
+	pb "orcanet/market"
 )
 
 /*
