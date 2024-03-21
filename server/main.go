@@ -183,6 +183,9 @@ func main() {
     if err := registerFileToDHT(context.Background(), kademliaDHT, req); err != nil {
         log.Fatal(err)
     }
+    if err := registerFileToDHT(context.Background(), kademliaDHT, req); err != nil {
+        log.Fatal(err)
+    }
 
     // Check for holders
     checkReq := &pb.CheckHoldersRequest{FileHash: "testhash"}
