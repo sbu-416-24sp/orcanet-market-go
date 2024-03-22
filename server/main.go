@@ -1,31 +1,13 @@
-/*
- *
- * Copyright 2015 gRPC authors.
- *
- * Modified by Stony Brook University students
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- *
- */
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -61,7 +43,14 @@ func main() {
 	flag.Parse()
 
 	// Convert the strings (from flags) to multiaddresses
-	listenAddr, _ := multiaddr.NewMultiaddr(*addr)
+	var listenAddrString string
+	if *addr == "" {
+		listenAddrString = "/ip4/0.0.0.0/tcp/0" // Default value
+	} else {
+		listenAddrString = *addr
+	} 
+	listenAddr, _ := multiaddr.NewMultiaddr(listenAddrString)
+	
 	// startBootstrapAddr, _ := multiaddr.NewMultiaddr(*startBootstrapNodeAt)
 
 	var bootstrapPeers []multiaddr.Multiaddr
@@ -74,12 +63,14 @@ func main() {
 			// Handle the error properly (e.g., log it or exit).
 			fmt.Errorf("Invalid bootstrap address: %s", err)
 		}
+
 		// Use the provided bootstrap address.
 		bootstrapPeers = append(bootstrapPeers, bootstrapAddr)
-	} else {
-		// Use default bootstrap peers if no address is provided.
-		bootstrapPeers = dht.DefaultBootstrapPeers
 	}
+	// } else {
+	// 	// Use default bootstrap peers if no address is provided.
+	// 	bootstrapPeers = dht.DefaultBootstrapPeers
+	// }
 
 	// Initialize a new libp2p Host
 	host, err := libp2p.New(libp2p.ListenAddrs(listenAddr))
@@ -87,6 +78,12 @@ func main() {
 		fmt.Errorf("Failed to create host: %s", err)
 	}
 	fmt.Println("Host created with ID ", host.ID())
+	for _, addr := range host.Addrs() {
+		// The "/ipfs/" prefix is used here for historical reasons.
+		// It may be "/p2p/" in other contexts or newer versions.
+		fullAddr := fmt.Sprintf("%s/p2p/%s", addr, host.ID())
+		fmt.Println("Listen address:", fullAddr)
+	}
 
 	// Initialize the DHT
 	kademliaDHT, err := dht.New(ctx, host)
@@ -95,15 +92,15 @@ func main() {
 	}
 	fmt.Println("DHT created")
 
+	// Connect the validator
+	kademliaDHT.Validator = &CustomValidator{}
+
+	connectToBootstrapPeers(ctx, host, bootstrapPeers, kademliaDHT)
+	
 	// Bootstrap the DHT
 	if err := kademliaDHT.Bootstrap(ctx); err != nil {
 		fmt.Errorf("Failed to bootstrap DHT: %s", err)
 	}
-
-	// Connect the validator
-	kademliaDHT.Validator = &CustomValidator{}
-
-	connectToBootstrapPeers(ctx, host, bootstrapPeers)
 
 	// Prompt for username in terminal
 	var username string
@@ -129,6 +126,10 @@ func main() {
 		Port:  416320,
 		Price: price,
 	}
+
+	log.Println("Looking for existence of peers on the network before proceeding...")
+	checkPeerExistence(ctx, host, kademliaDHT)
+	log.Println("Peer(s) found! proceeding with the application.")
 
 	for {
 		go peerDiscovery(ctx, host, kademliaDHT)
@@ -175,7 +176,22 @@ func main() {
 	}
 }
 
-func connectToBootstrapPeers(ctx context.Context, host host.Host, bootstrapPeers []multiaddr.Multiaddr) {
+func checkPeerExistence(ctx context.Context, host host.Host, dht *dht.IpfsDHT) bool {
+	if len(dht.RoutingTable().ListPeers()) > 0 {
+		return true
+	}
+
+    for {
+        isPeersFound := peerDiscovery(ctx, host, dht)
+        if isPeersFound {
+            return true
+        }
+        fmt.Println("No peers found, waiting...")
+        time.Sleep(7 * time.Second) // Wait for 5 seconds before trying again
+    }
+}
+
+func connectToBootstrapPeers(ctx context.Context, host host.Host, bootstrapPeers []multiaddr.Multiaddr, dht *dht.IpfsDHT) {
 	var wg sync.WaitGroup
 	for _, peerAddr := range bootstrapPeers {
 		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
@@ -192,17 +208,32 @@ func connectToBootstrapPeers(ctx context.Context, host host.Host, bootstrapPeers
 	wg.Wait()
 }
 
-func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT) {
-	routingDiscovery := drouting.NewRoutingDiscovery(dht)
-	dutil.Advertise(ctx, routingDiscovery, "market")
-	peerChan, _ := routingDiscovery.FindPeers(ctx, "market")
+//returns true if peer is found
+func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT) bool {
+    routingDiscovery := drouting.NewRoutingDiscovery(dht)
+    dutil.Advertise(ctx, routingDiscovery, "market")
 
-	for peer := range peerChan {
-		if peer.ID == host.ID() {
-			continue
+    peerChan, err := routingDiscovery.FindPeers(ctx, "market")
+    if err != nil {
+        log.Println("Failed to find peers:", err)
+        return false
+    }
+	log.Println("Peers:", peerChan)
+
+	peerDiscovered := false
+    for peer := range peerChan {
+        if peer.ID == host.ID() {
+            continue
+        }
+		err := host.Connect(ctx, peer)
+		if err != nil {
+			fmt.Printf("Failed connecting to %s, error: %s\n", peer.ID, err)
+		} else {
+			fmt.Println("Connected to:", peer.ID)
+			peerDiscovered = true
 		}
-		fmt.Println("Found peer:", peer)
-	}
+    }
+    return peerDiscovered
 }
 
 // register that the a user holds a file, then add the user to the list of file holders
