@@ -24,7 +24,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"math/rand"
 	"sync"
 
 	"github.com/libp2p/go-libp2p"
@@ -34,9 +33,6 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/multiformats/go-multiaddr"
-	"google.golang.org/protobuf/proto"
-
-	pb "orcanet/market"
 )
 
 var (
@@ -62,7 +58,6 @@ func main() {
 
 	// Convert the strings (from flags) to multiaddresses
 	listenAddr, _ := multiaddr.NewMultiaddr(*addr)
-	// startBootstrapAddr, _ := multiaddr.NewMultiaddr(*startBootstrapNodeAt)
 
 	var bootstrapPeers []multiaddr.Multiaddr
 
@@ -105,38 +100,14 @@ func main() {
 
 	connectToBootstrapPeers(ctx, host, bootstrapPeers)
 
-	// Prompt for username in terminal
-	var username string
-	fmt.Print("Enter username: ")
-	fmt.Scanln(&username)
-
-	// Generate a random ID for new user
-	userID := fmt.Sprintf("user%d", rand.Intn(10000))
-
-	fmt.Print("Enter a price for supplying files: ")
-	var price int64
-	_, err = fmt.Scanln(&price)
-	if err != nil {
-		fmt.Println("Error: ", err)
-		return
-	}
-
-	// Create a User struct with the provided username and generated ID
-	user := &pb.User{
-		Id:    userID,
-		Name:  username,
-		Ip:    "localhost",
-		Port:  416320,
-		Price: price,
-	}
-
 	for {
 		go peerDiscovery(ctx, host, kademliaDHT)
 
 		fmt.Println("---------------------------------")
 		fmt.Println("1. Register a file")
 		fmt.Println("2. Check holders for a file")
-		fmt.Println("3. Exit")
+		fmt.Println("3. Check for connected peers")
+		fmt.Println("4. Exit")
 		fmt.Print("Option: ")
 		var choice int
 		_, err := fmt.Scanln(&choice)
@@ -145,27 +116,32 @@ func main() {
 			continue
 		}
 
-		if choice == 3 {
+		if choice == 4 {
 			return
-		}
-
-		fmt.Print("Enter a file hash: ")
-		var fileHash string
-		_, err = fmt.Scanln(&fileHash)
-		if err != nil {
-			fmt.Errorf("Error: ", err)
-			continue
 		}
 
 		switch choice {
 		case 1:
-			req := &pb.RegisterFileRequest{User: user, FileHash: fileHash}
-			registerFile(ctx, kademliaDHT, req)
+			fmt.Print("Enter a file hash: ")
+			var fileHash string
+			_, err = fmt.Scanln(&fileHash)
+			if err != nil {
+				fmt.Errorf("Error: ", err)
+				continue
+			}
+			registerFile(ctx, kademliaDHT, fileHash)
 		case 2:
-			checkReq := &pb.CheckHoldersRequest{FileHash: fileHash}
-			holdersResp, _ := checkHolders(ctx, kademliaDHT, checkReq)
-			fmt.Println("Holders:", holdersResp.Holders)
+			fmt.Print("Enter a file hash: ")
+			var fileHash string
+			_, err = fmt.Scanln(&fileHash)
+			if err != nil {
+				fmt.Errorf("Error: ", err)
+				continue
+			}
+			checkHolders(ctx, kademliaDHT, fileHash)
 		case 3:
+			printRoutingTable(kademliaDHT)
+		case 4:
 			return
 		default:
 			fmt.Println("Unknown option: ", choice)
@@ -201,49 +177,36 @@ func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT) {
 		if peer.ID == host.ID() {
 			continue
 		}
-		fmt.Println("Found peer:", peer)
+		// fmt.Println("Found peer:", peer)
 	}
 }
 
-// register that the a user holds a file, then add the user to the list of file holders
-func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileRequest) error {
-	//serialize the User object to byte slice for storage
-	data, err := proto.Marshal(req.User)
-	if err != nil {
-		errMsg := fmt.Sprintf("Error marshaling user data for file hash %s: %v", req.FileHash, err)
-		fmt.Println(errMsg)
-		return fmt.Errorf(errMsg)
+func printRoutingTable(dht *dht.IpfsDHT) {
+	for _, peer := range dht.RoutingTable().ListPeers() {
+		fmt.Println("Peer ID:", peer)
 	}
-
-	// Use the file hash as the key to store serialized user data in the DHT
-	// for now use file hash provided by user in Req object
-	key := fmt.Sprintf("/market/file/%s", req.FileHash)
-	if err := dht.PutValue(ctx, key, data); err != nil {
-		errMsg := fmt.Sprintf("Error putting value in the DHT for file hash %s: %v", req.FileHash, err)
-		fmt.Println(errMsg)
-		return fmt.Errorf(errMsg)
-	}
-
-	fmt.Printf("Successfully registered file with hash %s\n", req.FileHash)
-	return nil
 }
 
-// CheckHolders returns a list of user names holding a file with a hash
-func checkHolders(ctx context.Context, dht *dht.IpfsDHT, req *pb.CheckHoldersRequest) (*pb.HoldersResponse, error) {
-	key := fmt.Sprintf("/market/file/%s", req.FileHash)
-	data, err := dht.GetValue(ctx, key)
+// registerFile registers on the DHT that the a multiaddress holds a file
+func registerFile(ctx context.Context, dht *dht.IpfsDHT, filehash string) {
+	err := dht.PutValue(ctx, "market/file/"+filehash, []byte(*addr))
 	if err != nil {
-		fmt.Printf("Failed to get value from the DHT: %v", err)
-		return nil, err
+		fmt.Println("Error: ", err)
 	}
+	fmt.Println("Put key: ", filehash+" Value: "+*addr)
+}
 
-	// Deserialize the data back into a User struct
-	var user pb.User
-	if err := proto.Unmarshal(data, &user); err != nil {
-		fmt.Printf("Failed to unmarshal user data: %v", err)
-		return nil, err
+// checkHolders prints out a list of multiaddresses holding a file with a hash
+func checkHolders(ctx context.Context, dht *dht.IpfsDHT, filehash string) {
+	key := fmt.Sprintf("market/file/%s", filehash)
+	data, err := dht.SearchValue(ctx, key)
+	fmt.Println("Searching for " + filehash)
+	if err != nil {
+		fmt.Println("Error: ", err)
+	} else {
+		fmt.Println("Found!")
+		for byteArray := range data {
+			fmt.Println(string(byteArray))
+		}
 	}
-
-	// Wrap the User in a HoldersResponse and return
-	return &pb.HoldersResponse{Holders: []*pb.User{&user}}, nil
 }
