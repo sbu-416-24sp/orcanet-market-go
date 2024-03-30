@@ -24,7 +24,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math/rand"
 	"sync"
+	"time"
+
+	pb "orcanet/market"
 
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -33,6 +37,7 @@ import (
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/multiformats/go-multiaddr"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -57,7 +62,13 @@ func main() {
 	flag.Parse()
 
 	// Convert the strings (from flags) to multiaddresses
-	listenAddr, _ := multiaddr.NewMultiaddr(*addr)
+	var listenAddrString string
+	if *addr == "" {
+		listenAddrString = "/ip4/0.0.0.0/tcp/0" // Default value
+	} else {
+		listenAddrString = *addr
+	}
+	listenAddr, _ := multiaddr.NewMultiaddr(listenAddrString)
 
 	var bootstrapPeers []multiaddr.Multiaddr
 
@@ -76,12 +87,18 @@ func main() {
 		bootstrapPeers = dht.DefaultBootstrapPeers
 	}
 
-	// Initialize a new libp2p Host
+	// // Initialize a new libp2p Host
 	host, err := libp2p.New(libp2p.ListenAddrs(listenAddr))
 	if err != nil {
 		fmt.Errorf("Failed to create host: %s", err)
 	}
 	fmt.Println("Host created with ID ", host.ID())
+	for _, addr := range host.Addrs() {
+		// The "/ipfs/" prefix is used here for historical reasons.
+		// It may be "/p2p/" in other contexts or newer versions.
+		fullAddr := fmt.Sprintf("%s/p2p/%s", addr, host.ID())
+		fmt.Println("Listen address:", fullAddr)
+	}
 
 	// Initialize the DHT
 	kademliaDHT, err := dht.New(ctx, host)
@@ -90,15 +107,44 @@ func main() {
 	}
 	fmt.Println("DHT created")
 
+	// Connect the validator
+	kademliaDHT.Validator = &CustomValidator{}
+
 	// Bootstrap the DHT
 	if err := kademliaDHT.Bootstrap(ctx); err != nil {
 		fmt.Errorf("Failed to bootstrap DHT: %s", err)
 	}
 
-	// Connect the validator
-	kademliaDHT.Validator = &CustomValidator{}
-
 	connectToBootstrapPeers(ctx, host, bootstrapPeers)
+
+	// Prompt for username in terminal
+	var username string
+	fmt.Print("Enter username: ")
+	fmt.Scanln(&username)
+
+	// Generate a random ID for new user
+	userID := fmt.Sprintf("user%d", rand.Intn(10000))
+
+	fmt.Print("Enter a price for supplying files: ")
+	var price int64
+	_, err = fmt.Scanln(&price)
+	if err != nil {
+		fmt.Println("Error: ", err)
+		return
+	}
+
+	// Create a User struct with the provided username and generated ID
+	user := &pb.User{
+		Id:    userID,
+		Name:  username,
+		Ip:    "localhost",
+		Port:  416320,
+		Price: price,
+	}
+
+	fmt.Println("Looking for existence of peers on the network before proceeding...")
+	checkPeerExistence(ctx, host, kademliaDHT)
+	fmt.Println("Peer(s) found! proceeding with the application.")
 
 	for {
 		go peerDiscovery(ctx, host, kademliaDHT)
@@ -129,7 +175,8 @@ func main() {
 				fmt.Errorf("Error: ", err)
 				continue
 			}
-			registerFile(ctx, kademliaDHT, fileHash)
+			req := &pb.RegisterFileRequest{User: user, FileHash: fileHash}
+			registerFile(ctx, kademliaDHT, req)
 		case 2:
 			fmt.Print("Enter a file hash: ")
 			var fileHash string
@@ -138,7 +185,9 @@ func main() {
 				fmt.Errorf("Error: ", err)
 				continue
 			}
-			checkHolders(ctx, kademliaDHT, fileHash)
+			checkReq := &pb.CheckHoldersRequest{FileHash: fileHash}
+			holdersResp, _ := checkHolders(ctx, kademliaDHT, checkReq)
+			fmt.Println("Holders:", holdersResp.Holders)
 		case 3:
 			printRoutingTable(kademliaDHT)
 		case 4:
@@ -168,17 +217,50 @@ func connectToBootstrapPeers(ctx context.Context, host host.Host, bootstrapPeers
 	wg.Wait()
 }
 
-func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT) {
+func checkPeerExistence(ctx context.Context, host host.Host, dht *dht.IpfsDHT) bool {
+	if len(dht.RoutingTable().ListPeers()) > 0 {
+		return true
+	}
+
+	for {
+		isPeersFound := peerDiscovery(ctx, host, dht)
+		if isPeersFound {
+			return true
+		}
+		fmt.Println("No peers found, waiting...")
+		time.Sleep(7 * time.Second) // Wait for 5 seconds before trying again
+	}
+}
+
+func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT) bool {
 	routingDiscovery := drouting.NewRoutingDiscovery(dht)
 	dutil.Advertise(ctx, routingDiscovery, "market")
-	peerChan, _ := routingDiscovery.FindPeers(ctx, "market")
 
+	peerChan, err := routingDiscovery.FindPeers(ctx, "market")
+	if err != nil {
+		fmt.Println("Failed to find peers:", err)
+		return false
+	}
+
+	peerDiscovered := false
 	for peer := range peerChan {
 		if peer.ID == host.ID() {
+			fmt.Printf("Connected to: %s\n (Myself)", peer.ID)
+
 			continue
 		}
-		// fmt.Println("Found peer:", peer)
+		err := host.Connect(ctx, peer)
+		if err != nil {
+			fmt.Printf("Failed connecting to %s, error: %s\n", peer.ID, err)
+		} else {
+			fmt.Printf("Connected to: %s\n", peer.ID)
+			for _, addr := range peer.Addrs {
+				fmt.Printf("Address: %s\n", addr)
+			}
+			peerDiscovered = true
+		}
 	}
+	return peerDiscovered
 }
 
 func printRoutingTable(dht *dht.IpfsDHT) {
@@ -187,26 +269,56 @@ func printRoutingTable(dht *dht.IpfsDHT) {
 	}
 }
 
-// registerFile registers on the DHT that the a multiaddress holds a file
-func registerFile(ctx context.Context, dht *dht.IpfsDHT, filehash string) {
-	err := dht.PutValue(ctx, "market/file/"+filehash, []byte(*addr))
+// register that the a user holds a file, then add the user to the list of file holders
+func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileRequest) error {
+	//serialize the User object to byte slice for storage
+	data, err := proto.Marshal(req.User)
 	if err != nil {
-		fmt.Println("Error: ", err)
+		errMsg := fmt.Sprintf("Error marshaling user data for file hash %s: %v", req.FileHash, err)
+		fmt.Println(errMsg)
+		return fmt.Errorf(errMsg)
 	}
-	fmt.Println("Put key: ", filehash+" Value: "+*addr)
+
+	key := fmt.Sprintf("/market/file/%s", req.FileHash)
+	if err := dht.PutValue(ctx, key, data); err != nil {
+		errMsg := fmt.Sprintf("Error putting value in the DHT for file hash %s: %v", req.FileHash, err)
+		fmt.Println(errMsg)
+		return fmt.Errorf(errMsg)
+	}
+
+	fmt.Printf("Successfully registered file with hash %s\n", req.FileHash)
+	return nil
 }
 
-// checkHolders prints out a list of multiaddresses holding a file with a hash
-func checkHolders(ctx context.Context, dht *dht.IpfsDHT, filehash string) {
-	key := fmt.Sprintf("market/file/%s", filehash)
-	data, err := dht.SearchValue(ctx, key)
-	fmt.Println("Searching for " + filehash)
+func checkHolders(ctx context.Context, dht *dht.IpfsDHT, req *pb.CheckHoldersRequest) (*pb.HoldersResponse, error) {
+	key := fmt.Sprintf("/market/file/%s", req.FileHash)
+	dataChan, err := dht.SearchValue(ctx, key)
 	if err != nil {
-		fmt.Println("Error: ", err)
-	} else {
-		fmt.Println("Found!")
-		for byteArray := range data {
-			fmt.Println(string(byteArray))
+		fmt.Printf("Failed to get value from the DHT: %v", err)
+		return nil, err
+	}
+
+	var holders []*pb.User
+	fmt.Println("Searching for " + req.FileHash)
+
+	for {
+		select {
+		case data, ok := <-dataChan:
+			if !ok {
+				// Channel has been closed, we've received all the data
+				return &pb.HoldersResponse{Holders: holders}, nil
+			}
+			// Deserialize the data back into a User struct
+			var user pb.User
+			if err := proto.Unmarshal(data, &user); err != nil {
+				fmt.Printf("Failed to unmarshal user data: %v", err)
+				continue // Skip this iteration
+			}
+			holders = append(holders, &user)
+		case <-ctx.Done():
+			// The context was cancelled or expired
+			fmt.Println("Context cancelled or expired.")
+			return nil, ctx.Err()
 		}
 	}
 }
