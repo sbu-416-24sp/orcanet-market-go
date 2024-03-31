@@ -202,7 +202,18 @@ func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT) {
 			continue
 		}
 		fmt.Println("Found peer:", peer)
+
+		err := host.Connect(ctx, peer)
+		if err != nil {
+			fmt.Printf("Failed connecting to %s, error: %s\n", peer.ID, err)
+		} else {
+			fmt.Printf("Connected to: %s\n", peer.ID)
+			for _, addr := range peer.Addrs {
+				fmt.Printf("Address: %s\n", addr)
+			}
+		}
 	}
+
 }
 
 // register that the a user holds a file, then add the user to the list of file holders
@@ -231,6 +242,7 @@ func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileReq
 // CheckHolders returns a list of user names holding a file with a hash
 func checkHolders(ctx context.Context, dht *dht.IpfsDHT, req *pb.CheckHoldersRequest) (*pb.HoldersResponse, error) {
 	key := fmt.Sprintf("/market/file/%s", req.FileHash)
+	fmt.Printf("KEY WE ARE ATTEMPTING TO FIND: " + key)
 	data, err := dht.GetValue(ctx, key)
 	if err != nil {
 		fmt.Printf("Failed to get value from the DHT: %v", err)
