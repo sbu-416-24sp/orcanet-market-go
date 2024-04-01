@@ -77,17 +77,19 @@ func main() {
 		// Try to create a multiaddr from the provided bootstrap flag.
 		bootstrapAddr, err := multiaddr.NewMultiaddr(*bootstrap)
 		if err != nil {
-			// Handle the error properly (e.g., log it or exit).
 			fmt.Errorf("Invalid bootstrap address: %s", err)
 		}
 		// Use the provided bootstrap address.
 		bootstrapPeers = append(bootstrapPeers, bootstrapAddr)
 	} else {
 		// Use default bootstrap peers if no address is provided.
-		bootstrapPeers = dht.DefaultBootstrapPeers
+<<<<<<< HEAD
+		// bootstrapPeers = dht.DefaultBootstrapPeers
+=======
+		//bootstrapPeers = dht.DefaultBootstrapPeers
+>>>>>>> 41f5d13 (fixed?)
 	}
 
-	// // Initialize a new libp2p Host
 	host, err := libp2p.New(libp2p.ListenAddrs(listenAddr))
 	if err != nil {
 		fmt.Errorf("Failed to create host: %s", err)
@@ -101,9 +103,10 @@ func main() {
 	}
 
 	// Initialize the DHT
-	kademliaDHT, err := dht.New(ctx, host)
+	kademliaDHT, err := dht.New(ctx, host, dht.Mode(dht.ModeServer))
 	if err != nil {
 		fmt.Errorf("Failed to create DHT: %s", err)
+		return
 	}
 	fmt.Println("DHT created")
 
@@ -142,12 +145,14 @@ func main() {
 		Price: price,
 	}
 
+	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
+
 	fmt.Println("Looking for existence of peers on the network before proceeding...")
-	checkPeerExistence(ctx, host, kademliaDHT)
+	checkPeerExistence(ctx, host, kademliaDHT, routingDiscovery)
 	fmt.Println("Peer(s) found! proceeding with the application.")
 
 	for {
-		go peerDiscovery(ctx, host, kademliaDHT)
+		go peerDiscovery(ctx, host, kademliaDHT, routingDiscovery)
 
 		fmt.Println("---------------------------------")
 		fmt.Println("1. Register a file")
@@ -217,13 +222,13 @@ func connectToBootstrapPeers(ctx context.Context, host host.Host, bootstrapPeers
 	wg.Wait()
 }
 
-func checkPeerExistence(ctx context.Context, host host.Host, dht *dht.IpfsDHT) bool {
+func checkPeerExistence(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routingDiscovery *drouting.RoutingDiscovery) bool {
 	if len(dht.RoutingTable().ListPeers()) > 0 {
 		return true
 	}
 
 	for {
-		isPeersFound := peerDiscovery(ctx, host, dht)
+		isPeersFound := peerDiscovery(ctx, host, dht, routingDiscovery)
 		if isPeersFound {
 			return true
 		}
@@ -232,8 +237,7 @@ func checkPeerExistence(ctx context.Context, host host.Host, dht *dht.IpfsDHT) b
 	}
 }
 
-func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT) bool {
-	routingDiscovery := drouting.NewRoutingDiscovery(dht)
+func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routingDiscovery *drouting.RoutingDiscovery) bool {
 	dutil.Advertise(ctx, routingDiscovery, "market")
 
 	peerChan, err := routingDiscovery.FindPeers(ctx, "market")
@@ -245,8 +249,7 @@ func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT) bool {
 	peerDiscovered := false
 	for peer := range peerChan {
 		if peer.ID == host.ID() {
-			fmt.Printf("Connected to: %s\n (Myself)", peer.ID)
-
+			fmt.Printf("Connected to: %s (Myself) \n", peer.ID)
 			continue
 		}
 		err := host.Connect(ctx, peer)
