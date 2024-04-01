@@ -83,7 +83,11 @@ func main() {
 		bootstrapPeers = append(bootstrapPeers, bootstrapAddr)
 	} else {
 		// Use default bootstrap peers if no address is provided.
+<<<<<<< HEAD
 		// bootstrapPeers = dht.DefaultBootstrapPeers
+=======
+		//bootstrapPeers = dht.DefaultBootstrapPeers
+>>>>>>> 41f5d13 (fixed?)
 	}
 
 	host, err := libp2p.New(libp2p.ListenAddrs(listenAddr))
@@ -99,9 +103,10 @@ func main() {
 	}
 
 	// Initialize the DHT
-	kademliaDHT, err := dht.New(ctx, host)
+	kademliaDHT, err := dht.New(ctx, host, dht.Mode(dht.ModeServer))
 	if err != nil {
 		fmt.Errorf("Failed to create DHT: %s", err)
+		return
 	}
 	fmt.Println("DHT created")
 
