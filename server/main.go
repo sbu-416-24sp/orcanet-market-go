@@ -83,11 +83,7 @@ func main() {
 		bootstrapPeers = append(bootstrapPeers, bootstrapAddr)
 	} else {
 		// Use default bootstrap peers if no address is provided.
-<<<<<<< HEAD
-		// bootstrapPeers = dht.DefaultBootstrapPeers
-=======
 		//bootstrapPeers = dht.DefaultBootstrapPeers
->>>>>>> 41f5d13 (fixed?)
 	}
 
 	host, err := libp2p.New(libp2p.ListenAddrs(listenAddr))
@@ -192,7 +188,11 @@ func main() {
 			}
 			checkReq := &pb.CheckHoldersRequest{FileHash: fileHash}
 			holdersResp, _ := checkHolders(ctx, kademliaDHT, checkReq)
-			fmt.Println("Holders:", holdersResp.Holders)
+			fmt.Println("Holders:")
+			for _, holder := range holdersResp.Holders {
+				fmt.Println(holder)
+			}
+			//fmt.Println("Holders:", holdersResp.Holders)
 		case 3:
 			printRoutingTable(kademliaDHT)
 		case 4:
@@ -270,6 +270,7 @@ func printRoutingTable(dht *dht.IpfsDHT) {
 	for _, peer := range dht.RoutingTable().ListPeers() {
 		fmt.Println("Peer ID:", peer)
 	}
+
 }
 
 // register that the a user holds a file, then add the user to the list of file holders
@@ -282,7 +283,9 @@ func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileReq
 		return fmt.Errorf(errMsg)
 	}
 
-	key := fmt.Sprintf("/market/file/%s", req.FileHash)
+	key := fmt.Sprintf("/market/file/%s/%s", req.FileHash, dht.PeerID())
+	print(key)
+
 	if err := dht.PutValue(ctx, key, data); err != nil {
 		errMsg := fmt.Sprintf("Error putting value in the DHT for file hash %s: %v", req.FileHash, err)
 		fmt.Println(errMsg)
@@ -294,34 +297,52 @@ func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileReq
 }
 
 func checkHolders(ctx context.Context, dht *dht.IpfsDHT, req *pb.CheckHoldersRequest) (*pb.HoldersResponse, error) {
-	key := fmt.Sprintf("/market/file/%s", req.FileHash)
-	dataChan, err := dht.SearchValue(ctx, key)
-	if err != nil {
-		fmt.Printf("Failed to get value from the DHT: %v", err)
-		return nil, err
-	}
 
 	var holders []*pb.User
 	fmt.Println("Searching for " + req.FileHash)
+	var allPeers []peer.ID = dht.RoutingTable().ListPeers()
+	allPeers = append(allPeers, dht.PeerID())
 
-	for {
-		select {
-		case data, ok := <-dataChan:
-			if !ok {
-				// Channel has been closed, we've received all the data
-				return &pb.HoldersResponse{Holders: holders}, nil
-			}
-			// Deserialize the data back into a User struct
-			var user pb.User
-			if err := proto.Unmarshal(data, &user); err != nil {
-				fmt.Printf("Failed to unmarshal user data: %v", err)
-				continue // Skip this iteration
-			}
-			holders = append(holders, &user)
-		case <-ctx.Done():
-			// The context was cancelled or expired
-			fmt.Println("Context cancelled or expired.")
-			return nil, ctx.Err()
+	// iterate through each peer to see if they own the file
+	for _, peer := range allPeers {
+
+		key := fmt.Sprintf("/market/file/%s/%s", req.FileHash, peer)
+		dataChan, err := dht.SearchValue(ctx, key)
+		if err != nil {
+			fmt.Printf("Failed to get value from the DHT: %v", err)
+			continue
 		}
+
+		var forLoopRunning = true // break out of the for loop once the channel has been closed
+		for {
+			select {
+			case data, ok := <-dataChan:
+				if !ok {
+					// Channel has been closed, we've received all the data
+					//return &pb.HoldersResponse{Holders: holders}, nil
+					forLoopRunning = false
+					break // this breaks out of the select loop
+				}
+				// Deserialize the data back into a User struct
+				var user pb.User
+				if err := proto.Unmarshal(data, &user); err != nil {
+					fmt.Printf("Failed to unmarshal user data: %v", err)
+					continue // Skip this iteration
+				}
+				holders = append(holders, &user)
+			case <-ctx.Done():
+				// The context was cancelled or expired
+				fmt.Println("Context cancelled or expired.")
+				return nil, ctx.Err()
+			}
+			// break out of for loop when forLoopRunning is set to false
+			if !forLoopRunning {
+				break
+			}
+		}
+
 	}
+
+	return &pb.HoldersResponse{Holders: holders}, nil
+
 }
