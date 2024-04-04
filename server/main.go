@@ -300,9 +300,11 @@ func checkHolders(ctx context.Context, dht *dht.IpfsDHT, req *pb.CheckHoldersReq
 
 	var holders []*pb.User
 	fmt.Println("Searching for " + req.FileHash)
+	var allPeers []peer.ID = dht.RoutingTable().ListPeers()
+	allPeers = append(allPeers, dht.PeerID())
 
 	// iterate through each peer to see if they own the file
-	for _, peer := range dht.RoutingTable().ListPeers() {
+	for _, peer := range allPeers {
 
 		key := fmt.Sprintf("/market/file/%s/%s", req.FileHash, peer)
 		dataChan, err := dht.SearchValue(ctx, key)
