@@ -2,25 +2,16 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"math/rand"
-	"os"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
 
 	pb "orcanet/market"
 
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
-	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -29,6 +20,14 @@ var (
 	bootstrap  = flag.String("bootstrap", "", "multiaddresses to bootstrap to")
 	addr       = flag.String("addr", "", "multiaddresses to listen to")
 )
+
+type DHTvalue struct {
+	Ids    string
+	Names  string
+	Ips    string
+	Ports  string
+	Prices string
+}
 
 type CustomValidator struct{}
 
@@ -49,10 +48,10 @@ func main() {
 	ctx := context.Background()
 	flag.Parse()
 
-	// Convert the strings (from flags) to multiaddresses
+	// Construct listening address
 	var listenAddrString string
 	if *addr == "" {
-		listenAddrString = "/ip4/0.0.0.0/tcp/0" // Default value
+		listenAddrString = "/ip4/0.0.0.0/tcp/0"
 	} else {
 		listenAddrString = *addr
 	}
@@ -60,32 +59,27 @@ func main() {
 
 	var bootstrapPeers []multiaddr.Multiaddr
 
-	// Check if a bootstrap address is provided.
+	// Connect to bootstrap peers
 	if len(*bootstrap) > 0 {
-		// Try to create a multiaddr from the provided bootstrap flag.
 		bootstrapAddr, err := multiaddr.NewMultiaddr(*bootstrap)
 		if err != nil {
 			fmt.Errorf("Invalid bootstrap address: %s", err)
 		}
-		// Use the provided bootstrap address.
 		bootstrapPeers = append(bootstrapPeers, bootstrapAddr)
-	} else {
-		// Use default bootstrap peers if no address is provided.
-		// bootstrapPeers = dht.DefaultBootstrapPeers
 	}
 
-	privKey, err := LoadOrCreateKey(KeyFilePath)
+	// Create host
+	privKey, err := LoadOrCreateKey("./peer_identity.key")
 	if err != nil {
 		panic(err)
 	}
+
 	host, err := libp2p.New(libp2p.ListenAddrs(listenAddr), libp2p.Identity(privKey))
 	if err != nil {
 		fmt.Errorf("Failed to create host: %s", err)
 	}
-	fmt.Println("Host created with ID ", host.ID())
+
 	for _, addr := range host.Addrs() {
-		// The "/ipfs/" prefix is used here for historical reasons.
-		// It may be "/p2p/" in other contexts or newer versions.
 		fullAddr := fmt.Sprintf("%s/p2p/%s", addr, host.ID())
 		fmt.Println("Listen address:", fullAddr)
 	}
@@ -101,7 +95,6 @@ func main() {
 		fmt.Errorf("Failed to create DHT: %s", err)
 		return
 	}
-	fmt.Println("DHT created")
 
 	// Connect the validator
 	kademliaDHT.Validator = &CustomValidator{}
@@ -113,7 +106,25 @@ func main() {
 
 	connectToBootstrapPeers(ctx, host, bootstrapPeers)
 
-	// Prompt for username in terminal
+	// Create the user, connect to peers and run CLI
+	user := promptForUserInfo(ctx)
+	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
+
+	fmt.Println("Looking for existence of peers on the network before proceeding...")
+	checkPeerExistence(ctx, host, kademliaDHT, routingDiscovery)
+	fmt.Println("Peer(s) found! proceeding with the application.")
+
+	runCLI(ctx, host, kademliaDHT, routingDiscovery, user)
+}
+
+// promptForUserInfo creates a user struct based on information
+// entered by the user in the terminal
+//
+// Parameters:
+// - ctx: A context.Context for controlling the function's execution lifetime.
+//
+// Returns: A *pb.User containing the ID, name, IP address, port, and price of the user
+func promptForUserInfo(ctx context.Context) *pb.User {
 	var username string
 	fmt.Print("Enter username: ")
 	fmt.Scanln(&username)
@@ -123,13 +134,8 @@ func main() {
 
 	fmt.Print("Enter a price for supplying files: ")
 	var price int64
-	_, err = fmt.Scanln(&price)
-	if err != nil {
-		fmt.Println("Error: ", err)
-		return
-	}
+	fmt.Scanln(&price)
 
-	// Create a User struct with the provided username and generated ID
 	user := &pb.User{
 		Id:    userID,
 		Name:  username,
@@ -138,14 +144,22 @@ func main() {
 		Price: price,
 	}
 
-	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
+	return user
+}
 
-	fmt.Println("Looking for existence of peers on the network before proceeding...")
-	checkPeerExistence(ctx, host, kademliaDHT, routingDiscovery)
-	fmt.Println("Peer(s) found! proceeding with the application.")
-
+// runCLI provides a command line interface for users to register files, check the holders for a file,
+// and check for connected peers
+//
+// Parameters:
+// - ctx: A context.Context for controlling the function's execution lifetime.
+// - host: The local host.Host instance.
+// - dht: A pointer to the dht.IpfsDHT instance used for direct DHT operations.
+// - routingDiscovery: A pointer to the drouting.RoutingDiscovery used for peer discovery.
+//
+// Returns: None
+func runCLI(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routingDiscovery *drouting.RoutingDiscovery, user *pb.User) {
 	for {
-		go peerDiscovery(ctx, host, kademliaDHT, routingDiscovery)
+		go peerDiscovery(ctx, host, dht, routingDiscovery)
 
 		fmt.Println("---------------------------------")
 		fmt.Println("1. Register a file")
@@ -174,7 +188,7 @@ func main() {
 				continue
 			}
 			req := &pb.RegisterFileRequest{User: user, FileHash: fileHash}
-			registerFile(ctx, kademliaDHT, req)
+			registerFile(ctx, dht, req)
 		case 2:
 			fmt.Print("Enter a file hash: ")
 			var fileHash string
@@ -184,12 +198,12 @@ func main() {
 				continue
 			}
 			checkReq := &pb.CheckHoldersRequest{FileHash: fileHash}
-			holdersResp, _ := checkHolders(ctx, kademliaDHT, checkReq)
+			holdersResp, _ := checkHolders(ctx, dht, checkReq)
 			for _, user := range holdersResp.Holders {
 				fmt.Println("User:", user)
 			}
 		case 3:
-			printRoutingTable(kademliaDHT)
+			printRoutingTable(dht)
 		case 4:
 			return
 		default:
@@ -198,229 +212,4 @@ func main() {
 
 		fmt.Println()
 	}
-}
-
-func connectToBootstrapPeers(ctx context.Context, host host.Host, bootstrapPeers []multiaddr.Multiaddr) {
-	var wg sync.WaitGroup
-	for _, peerAddr := range bootstrapPeers {
-		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := host.Connect(ctx, *peerinfo); err != nil {
-				fmt.Errorf("Failed to connect to bootstrap peer %v: %s", peerinfo, err)
-			} else {
-				fmt.Printf("Connected to bootstrap peer: %s\n", peerinfo.ID)
-			}
-		}()
-	}
-	wg.Wait()
-}
-
-func checkPeerExistence(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routingDiscovery *drouting.RoutingDiscovery) bool {
-	if len(dht.RoutingTable().ListPeers()) > 0 {
-		return true
-	}
-
-	for {
-		isPeersFound := peerDiscovery(ctx, host, dht, routingDiscovery)
-		if isPeersFound {
-			return true
-		}
-		fmt.Println("No peers found, waiting...")
-		time.Sleep(7 * time.Second) // Wait for 5 seconds before trying again
-	}
-}
-
-func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routingDiscovery *drouting.RoutingDiscovery) bool {
-	dutil.Advertise(ctx, routingDiscovery, "market")
-
-	peerChan, err := routingDiscovery.FindPeers(ctx, "market")
-	if err != nil {
-		fmt.Println("Failed to find peers:", err)
-		return false
-	}
-
-	peerDiscovered := false
-	for peer := range peerChan {
-		if peer.ID == host.ID() {
-			continue
-		}
-
-		success := tryConnectWithBackoff(ctx, host, peer, 3, 1*time.Second)
-		if success {
-			//  fmt.Printf("(update) Reran peer discovery\n")
-			// fmt.Printf("Connected to: %s\n", peer.ID)
-			// for _, addr := range peer.Addrs {
-			// 	fmt.Printf("Address: %s\n", addr)
-			// }
-			peerDiscovered = true
-		} else {
-			dht.RoutingTable().RemovePeer(peer.ID)
-			fmt.Printf("Peer %s has left the network \n", peer.ID)
-		}
-	}
-	return peerDiscovered
-}
-
-func tryConnectWithBackoff(ctx context.Context, host host.Host, peer peer.AddrInfo, maxRetries int, initialBackoff time.Duration) bool {
-	backoff := initialBackoff
-	for i := 0; i < maxRetries; i++ {
-		err := host.Connect(ctx, peer)
-		if err == nil {
-			return true
-		}
-		fmt.Printf("Attempt %d: Failed connecting to %s, error: %s\n", i+1, peer.ID, err)
-
-		time.Sleep(backoff + time.Duration(rand.Intn(1000))*time.Millisecond) // Add some randomness
-		backoff *= 2
-	}
-	return false
-}
-
-func printRoutingTable(dht *dht.IpfsDHT) {
-	for _, peer := range dht.RoutingTable().ListPeers() {
-		fmt.Println("Peer ID:", peer)
-	}
-}
-
-type DHTvalue struct {
-	Ids    string
-	Names  string
-	Ips    string
-	Ports  string
-	Prices string
-}
-
-// register that the a user holds a file, then add the user to the list of file holders
-func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileRequest) error {
-	//get existing data from DHT
-	key := fmt.Sprintf("/market/file/%s", req.FileHash)
-	dataChan, _ := dht.SearchValue(ctx, key)
-
-	var rawData []byte
-	for data := range dataChan {
-		rawData = data // Assuming data is a byte slice containing JSON data
-		break          //we only expect one result
-	}
-
-	var result DHTvalue
-	_ = json.Unmarshal(rawData, &result)
-
-	var appendedResult DHTvalue = DHTvalue{
-		Ids:    result.Ids + req.User.Id + "|",
-		Names:  result.Names + req.User.Name + "|",
-		Ips:    result.Ips + req.User.Ip + "|",
-		Ports:  result.Ports + strconv.Itoa(int(req.User.Port)) + "|",
-		Prices: result.Prices + strconv.Itoa(int(req.User.Price)) + "|",
-	}
-
-	//serialize the User object to byte slice for storage
-	data, err := json.Marshal(appendedResult)
-
-	if err != nil {
-		errMsg := fmt.Sprintf("Error marshaling user data for file hash %s: %v", req.FileHash, err)
-		fmt.Println(errMsg)
-		return fmt.Errorf(errMsg)
-	}
-
-	key := fmt.Sprintf("/market/file/%s/%s", req.FileHash, dht.PeerID())
-	print(key)
-
-	if err := dht.PutValue(ctx, key, data); err != nil {
-		errMsg := fmt.Sprintf("Error putting value in the DHT for file hash %s: %v", req.FileHash, err)
-		fmt.Println(errMsg)
-		return fmt.Errorf(errMsg)
-	}
-
-	fmt.Printf("Successfully registered file with hash %s\n", req.FileHash)
-	return nil
-}
-
-func checkHolders(ctx context.Context, dht *dht.IpfsDHT, req *pb.CheckHoldersRequest) (*pb.HoldersResponse, error) {
-	key := fmt.Sprintf("/market/file/%s", req.FileHash)
-
-	dataChan, _ := dht.SearchValue(ctx, key)
-
-	var rawData []byte
-	for data := range dataChan {
-		rawData = data // Assuming data is a byte slice containing JSON data
-		break          //we only expect one result
-	}
-
-	var result DHTvalue
-	_ = json.Unmarshal(rawData, &result)
-
-	ids := strings.Split(result.Ids, "|")
-	names := strings.Split(result.Names, "|")
-	ips := strings.Split(result.Ips, "|")
-	ports := strings.Split(result.Ports, "|")
-	prices := strings.Split(result.Prices, "|")
-
-	var holders = []*pb.User{}
-
-	if !(len(ids) == len(names) && len(names) == len(ips) && len(ips) == len(ports) && len(ports) == len(prices)) {
-		fmt.Println("Issue with dht returns - unequal data")
-		return &pb.HoldersResponse{Holders: holders}, nil
-	}
-
-	if len(ids) <= 1 { //one because split will have an extra empty element if the key exists
-		return &pb.HoldersResponse{Holders: holders}, nil
-	}
-
-	for i := 0; i < len(ids)-1; i++ {
-		port, _ := strconv.Atoi(ports[i])
-		price, _ := strconv.Atoi(prices[i])
-
-		user := &pb.User{
-			Id:    ids[i],
-			Name:  names[i],
-			Ip:    ips[i],
-			Port:  int32(port),
-			Price: int64(price),
-		}
-
-		holders = append(holders, user)
-	}
-
-	return &pb.HoldersResponse{Holders: holders}, nil
-}
-
-const KeyFilePath = "./peer_identity.key"
-
-// LoadOrCreateKey loads an existing key from a file, or creates a new one if the file does not exist.
-func LoadOrCreateKey(path string) (libp2pcrypto.PrivKey, error) {
-	// Check if the key file exists
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		// Key file does not exist, create a new key
-		priv, _, err := libp2pcrypto.GenerateKeyPair(libp2pcrypto.RSA, 2048)
-		if err != nil {
-			return nil, err
-		}
-
-		// Save the newly generated key
-		keyBytes, err := libp2pcrypto.MarshalPrivateKey(priv)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := os.WriteFile(path, keyBytes, 0600); err != nil {
-			return nil, err
-		}
-
-		return priv, nil
-	}
-
-	// Key file exists, load the key
-	keyBytes, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	priv, err := libp2pcrypto.UnmarshalPrivateKey(keyBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	return priv, nil
 }
