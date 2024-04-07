@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
+	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
@@ -23,10 +25,9 @@ import (
 )
 
 var (
-	clientMode           = flag.Bool("client", false, "run this program in client mode")
-	startBootstrapNodeAt = flag.String("startBootstrapNodeAt", "", "start a bootstrap node")
-	bootstrap            = flag.String("bootstrap", "", "multiaddresses to bootstrap to")
-	addr                 = flag.String("addr", "", "multiaddresses to listen to")
+	clientMode = flag.Bool("client", false, "run this program in client mode")
+	bootstrap  = flag.String("bootstrap", "", "multiaddresses to bootstrap to")
+	addr       = flag.String("addr", "", "multiaddresses to listen to")
 )
 
 type CustomValidator struct{}
@@ -73,7 +74,11 @@ func main() {
 		// bootstrapPeers = dht.DefaultBootstrapPeers
 	}
 
-	host, err := libp2p.New(libp2p.ListenAddrs(listenAddr))
+	privKey, err := LoadOrCreateKey(KeyFilePath)
+	if err != nil {
+		panic(err)
+	}
+	host, err := libp2p.New(libp2p.ListenAddrs(listenAddr), libp2p.Identity(privKey))
 	if err != nil {
 		fmt.Errorf("Failed to create host: %s", err)
 	}
@@ -376,4 +381,43 @@ func checkHolders(ctx context.Context, dht *dht.IpfsDHT, req *pb.CheckHoldersReq
 	}
 
 	return &pb.HoldersResponse{Holders: holders}, nil
+}
+
+const KeyFilePath = "./peer_identity.key"
+
+// LoadOrCreateKey loads an existing key from a file, or creates a new one if the file does not exist.
+func LoadOrCreateKey(path string) (libp2pcrypto.PrivKey, error) {
+	// Check if the key file exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// Key file does not exist, create a new key
+		priv, _, err := libp2pcrypto.GenerateKeyPair(libp2pcrypto.RSA, 2048)
+		if err != nil {
+			return nil, err
+		}
+
+		// Save the newly generated key
+		keyBytes, err := libp2pcrypto.MarshalPrivateKey(priv)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := os.WriteFile(path, keyBytes, 0600); err != nil {
+			return nil, err
+		}
+
+		return priv, nil
+	}
+
+	// Key file exists, load the key
+	keyBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	priv, err := libp2pcrypto.UnmarshalPrivateKey(keyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return priv, nil
 }
