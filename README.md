@@ -27,13 +27,13 @@ An implementation of the OrcaNet market server, built using Go and [gRPC](https:
 To start the host Node:
 
 ```Shell
-go run server/main.go
+go run server/*.go
 ```
 
 To run another node and connect, paste the multiaddress provided from the previous command (it should be next to "Listen address: ". Use the one that is not 127.0.0.1 as other nodes will not recognize the local IP address)
 
 ```Shell
-go run server/main.go -bootstrap (multiaddress)
+go run server/*.go -bootstrap (multiaddress)
 ```
 
 To compile the protobuf at `market/market.proto`:

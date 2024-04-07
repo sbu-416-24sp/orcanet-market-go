@@ -48,6 +48,17 @@ func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileReq
 	var result DHTvalue
 	_ = json.Unmarshal(rawData, &result)
 
+	ids := strings.Split(result.Ids, "|")
+
+	// check if the user already placed this file in
+	for _, id := range ids {
+		if id == req.User.Id {
+			errMsg := "You have already placed this file in the DHT."
+			fmt.Println(errMsg)
+			return fmt.Errorf(errMsg)
+		}
+	}
+
 	var appendedResult DHTvalue = DHTvalue{
 		Ids:    result.Ids + req.User.Id + "|",
 		Names:  result.Names + req.User.Name + "|",
@@ -88,7 +99,13 @@ func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileReq
 func checkHolders(ctx context.Context, dht *dht.IpfsDHT, req *pb.CheckHoldersRequest) (*pb.HoldersResponse, error) {
 	key := fmt.Sprintf("/market/file/%s", req.FileHash)
 
-	dataChan, _ := dht.SearchValue(ctx, key)
+	dataChan, err := dht.SearchValue(ctx, key)
+
+	if err != nil {
+		errMsg := fmt.Sprintf("Error searching for file %s", req.FileHash)
+		fmt.Println(errMsg)
+		return nil, fmt.Errorf(errMsg)
+	}
 
 	var rawData []byte
 	for data := range dataChan {

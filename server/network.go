@@ -65,7 +65,7 @@ func checkPeerExistence(ctx context.Context, host host.Host, dht *dht.IpfsDHT, r
 			return true
 		}
 		fmt.Println("No peers found, waiting...")
-		time.Sleep(7 * time.Second) // Wait for 5 seconds before trying again
+		time.Sleep(7 * time.Second)
 	}
 }
 
@@ -97,11 +97,6 @@ func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routin
 
 		success := tryConnectWithBackoff(ctx, host, peer, 3, 1*time.Second)
 		if success {
-			//  fmt.Printf("(update) Reran peer discovery\n")
-			// fmt.Printf("Connected to: %s\n", peer.ID)
-			// for _, addr := range peer.Addrs {
-			// 	fmt.Printf("Address: %s\n", addr)
-			// }
 			peerDiscovered = true
 		} else {
 			dht.RoutingTable().RemovePeer(peer.ID)
@@ -133,7 +128,7 @@ func tryConnectWithBackoff(ctx context.Context, host host.Host, peer peer.AddrIn
 		}
 		fmt.Printf("Attempt %d: Failed connecting to %s, error: %s\n", i+1, peer.ID, err)
 
-		time.Sleep(backoff + time.Duration(rand.Intn(1000))*time.Millisecond) // Add some randomness
+		time.Sleep(backoff + time.Duration(rand.Intn(1000))*time.Millisecond)
 		backoff *= 2
 	}
 	return false
