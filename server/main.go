@@ -275,6 +275,7 @@ func printRoutingTable(dht *dht.IpfsDHT) {
 
 // register that the a user holds a file, then add the user to the list of file holders
 func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileRequest) error {
+
 	//serialize the User object to byte slice for storage
 	data, err := proto.Marshal(req.User)
 	if err != nil {
@@ -284,7 +285,6 @@ func registerFile(ctx context.Context, dht *dht.IpfsDHT, req *pb.RegisterFileReq
 	}
 
 	key := fmt.Sprintf("/market/file/%s/%s", req.FileHash, dht.PeerID())
-	print(key)
 
 	if err := dht.PutValue(ctx, key, data); err != nil {
 		errMsg := fmt.Sprintf("Error putting value in the DHT for file hash %s: %v", req.FileHash, err)
