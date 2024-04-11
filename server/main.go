@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"math/rand"
+	"regexp"
+	"strings"
 
 	pb "orcanet/market"
 
@@ -36,12 +40,24 @@ func (cv CustomValidator) Select(string, [][]byte) (int, error) {
 }
 
 func (cv CustomValidator) Validate(key string, value []byte) error {
-	//  length := 10
-	//  hexRegex := regexp.MustCompile("^[0-9a-fA-F]{" + strconv.Itoa(length) + "}$")
-	//  if !hexRegex.MatchString(key) {
-	// 	 return errors.New("input is not a valid hexadecimal string or does not match the expected length")
-	//  }
-	return nil
+    // Remove the prefix from the key
+    trimmedKey := strings.TrimPrefix(key, "/market/file/")
+
+    //log.Printf("Validating trimmed key: %s", trimmedKey)
+
+    // Define a regular expression for a SHA-256 hash: 64 hexadecimal characters
+    hexRegex, err := regexp.Compile("^[a-fA-F0-9]{64}$")
+    if err != nil {
+        log.Printf("Error compiling regex: %v", err)
+        return err
+    }
+
+    // Check if trimmed key is valid sha-256
+    if !hexRegex.MatchString(trimmedKey) {
+        return errors.New("input is not a valid SHA-256 hash")
+    }
+
+    return nil
 }
 
 func main() {
