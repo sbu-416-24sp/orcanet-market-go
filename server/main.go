@@ -83,7 +83,6 @@ func main() {
 		fullAddr := fmt.Sprintf("%s/p2p/%s", addr, host.ID())
 		fmt.Println("Listen address:", fullAddr)
 	}
-
 	// Initialize the DHT
 	var kademliaDHT *dht.IpfsDHT
 	if *clientMode {

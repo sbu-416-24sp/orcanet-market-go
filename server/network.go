@@ -28,7 +28,20 @@ import (
 // Returns: None.
 func connectToBootstrapPeers(ctx context.Context, host host.Host, bootstrapPeers []multiaddr.Multiaddr) {
 	var wg sync.WaitGroup
-	for _, peerAddr := range bootstrapPeers {
+	bootMultiAddr, _ := multiaddr.NewMultiaddr("/ip4/130.245.173.205/tcp/40735/p2p/QmYdeQi7iJt9RdwMPYtww3w6EKnQTziKYzt9BWFXC4qYeh")
+	bootinfo, _ := peer.AddrInfoFromP2pAddr(bootMultiAddr)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := host.Connect(ctx, *bootinfo); err != nil {
+			fmt.Errorf("Failed to connect to bootstrap peer %v: %s", bootinfo, err)
+		} else {
+			fmt.Printf("Connected to bootstrap peer: %s\n", bootinfo.ID)
+		}
+	}()
+	wg.Wait()
+
+	/*for _, peerAddr := range bootstrapPeers {
 		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
 		wg.Add(1)
 		go func() {
@@ -40,7 +53,7 @@ func connectToBootstrapPeers(ctx context.Context, host host.Host, bootstrapPeers
 			}
 		}()
 	}
-	wg.Wait()
+	wg.Wait()*/
 }
 
 // checkPeerExistence checks if at least one peer can be discovered in the network
