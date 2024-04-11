@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math/rand"
 	"regexp"
 	"strings"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -40,24 +40,24 @@ func (cv CustomValidator) Select(string, [][]byte) (int, error) {
 }
 
 func (cv CustomValidator) Validate(key string, value []byte) error {
-    // Remove the prefix from the key
-    trimmedKey := strings.TrimPrefix(key, "/market/file/")
+	// Remove the prefix from the key
+	trimmedKey := strings.TrimPrefix(key, "/market/file/")
 
-    //log.Printf("Validating trimmed key: %s", trimmedKey)
+	//log.Printf("Validating trimmed key: %s", trimmedKey)
 
-    // Define a regular expression for a SHA-256 hash: 64 hexadecimal characters
-    hexRegex, err := regexp.Compile("^[a-fA-F0-9]{64}$")
-    if err != nil {
-        log.Printf("Error compiling regex: %v", err)
-        return err
-    }
+	// Define a regular expression for a SHA-256 hash: 64 hexadecimal characters
+	hexRegex, err := regexp.Compile("^[a-fA-F0-9]{64}$")
+	if err != nil {
+		log.Printf("Error compiling regex: %v", err)
+		return err
+	}
 
-    // Check if trimmed key is valid sha-256
-    if !hexRegex.MatchString(trimmedKey) {
-        return errors.New("input is not a valid SHA-256 hash")
-    }
+	// Check if trimmed key is valid sha-256
+	if !hexRegex.MatchString(trimmedKey) {
+		return errors.New("input is not a valid SHA-256 hash")
+	}
 
-    return nil
+	return nil
 }
 
 func main() {
@@ -122,7 +122,7 @@ func main() {
 	connectToBootstrapPeers(ctx, host, bootstrapPeers)
 
 	// Create the user, connect to peers and run CLI
-	user := promptForUserInfo(ctx)
+	user := promptForUserInfo(ctx, kademliaDHT.PeerID())
 	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
 
 	fmt.Println("Looking for existence of peers on the network before proceeding...")
@@ -139,20 +139,20 @@ func main() {
 // - ctx: A context.Context for controlling the function's execution lifetime.
 //
 // Returns: A *pb.User containing the ID, name, IP address, port, and price of the user
-func promptForUserInfo(ctx context.Context) *pb.User {
+func promptForUserInfo(ctx context.Context, pID peer.ID) *pb.User {
 	var username string
 	fmt.Print("Enter username: ")
 	fmt.Scanln(&username)
 
-	// Generate a random ID for new user
-	userID := fmt.Sprintf("user%d", rand.Intn(10000))
+	// convert peer ID to string
+	pIDString := fmt.Sprintf("%v", pID)
 
 	fmt.Print("Enter a price for supplying files: ")
 	var price int64
 	fmt.Scanln(&price)
 
 	user := &pb.User{
-		Id:    userID,
+		Id:    pIDString,
 		Name:  username,
 		Ip:    "localhost",
 		Port:  416320,
