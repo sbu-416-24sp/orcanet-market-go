@@ -41,19 +41,6 @@ func connectToBootstrapPeers(ctx context.Context, host host.Host, bootstrapPeers
 	}()
 	wg.Wait()
 
-	/*for _, peerAddr := range bootstrapPeers {
-		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := host.Connect(ctx, *peerinfo); err != nil {
-				fmt.Errorf("Failed to connect to bootstrap peer %v: %s", peerinfo, err)
-			} else {
-				fmt.Printf("Connected to bootstrap peer: %s\n", peerinfo.ID)
-			}
-		}()
-	}
-	wg.Wait()*/
 }
 
 // checkPeerExistence checks if at least one peer can be discovered in the network
