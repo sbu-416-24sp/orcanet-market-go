@@ -1,10 +1,10 @@
 # Go Market Server
 
-## Team Sea Chicken 🐔
+## Team Dolphins
 
 An implementation of the OrcaNet market server, built using Go and [gRPC](https://grpc.io/docs/languages/go/quickstart).
 
-## Setup
+## Setup (Continued from Sea Chicken)
 
 1. Install [Go](https://go.dev/doc/install)
    * Ensure Go executables are available on PATH, (e.g. at `~/go/bin`)
@@ -21,18 +21,19 @@ An implementation of the OrcaNet market server, built using Go and [gRPC](https:
 
    `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`
 
-## Running
 
-To run the market server:
+## Running the Program
+
+To start the host Node:
 
 ```Shell
-go run server/main.go
+go run server/*.go
 ```
 
-To run a test client:
+To run another node and connect, paste the multiaddress provided from the previous command (it should be next to "Listen address: ". Use the one that is not 127.0.0.1 as other nodes will not recognize the local IP address)
 
 ```Shell
-go run test_client/main.go
+go run server/*.go -bootstrap (multiaddress)
 ```
 
 To compile the protobuf at `market/market.proto`:
@@ -59,3 +60,15 @@ Detailed gRPC endpoints are in `market/market.proto`
 - Then, clients can search for holders using the CheckHolders RPC
   - Provide a fileHash to identify the file to search for
   - Returns a list of Users that hold the file.
+
+## Functionality
+Once connected, the program will ask to enter a username and a price for supplying files. After more than one peer is detected, peers can perform the following options:
+
+1. Register a file
+Enter the file hash when prompted. This file hash will be added to the DHT.
+2. Check holders for a file
+Enter the hash of file you want. This will return a list of all holders of that file.
+3. Check for connected peers
+Returns a list of all peers that are currently connected and disconnected to the DHT.
+4. Exit
+Disconnects node from the network.

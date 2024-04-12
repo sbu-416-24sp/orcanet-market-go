@@ -1,98 +1,230 @@
-/*
- *
- * Copyright 2015 gRPC authors.
- *
- * Modified by Stony Brook University students
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- *
- */
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
-	"net"
+	"regexp"
+	"strings"
 
 	pb "orcanet/market"
 
-	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/emptypb"
+	"github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
+	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
+	"github.com/multiformats/go-multiaddr"
 )
 
 var (
-	port = flag.Int("port", 50051, "The server port")
+	clientMode = flag.Bool("client", false, "run this program in client mode")
+	bootstrap  = flag.String("bootstrap", "", "multiaddresses to bootstrap to")
+	addr       = flag.String("addr", "", "multiaddresses to listen to")
 )
 
-// map file hashes to supplied files + prices
-var files = make(map[string][]*pb.RegisterFileRequest)
-
-// print the current holders map
-func printHoldersMap() {
-	for hash, holders := range files {
-		fmt.Printf("\nFile Hash: %s\n", hash)
-
-		for _, holder := range holders {
-			user := holder.GetUser()
-			fmt.Printf("Username: %s, Price: %d\n", user.GetName(), user.GetPrice())
-		}
-
-	}
+type DHTvalue struct {
+	Ids    string
+	Names  string
+	Ips    string
+	Ports  string
+	Prices string
 }
 
-type server struct {
-	pb.UnimplementedMarketServer
+type CustomValidator struct{}
+
+func (cv CustomValidator) Select(string, [][]byte) (int, error) {
+	return 0, nil
+}
+
+func (cv CustomValidator) Validate(key string, value []byte) error {
+	// Remove the prefix from the key
+	trimmedKey := strings.TrimPrefix(key, "/market/file/")
+
+	//log.Printf("Validating trimmed key: %s", trimmedKey)
+
+	// Define a regular expression for a SHA-256 hash: 64 hexadecimal characters
+	hexRegex, err := regexp.Compile("^[a-fA-F0-9]{64}$")
+	if err != nil {
+		log.Printf("Error compiling regex: %v", err)
+		return err
+	}
+
+	// Check if trimmed key is valid sha-256
+	if !hexRegex.MatchString(trimmedKey) {
+		return errors.New("input is not a valid SHA-256 hash")
+	}
+
+	return nil
 }
 
 func main() {
+	ctx := context.Background()
 	flag.Parse()
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
+
+	// Construct listening address
+	var listenAddrString string
+	if *addr == "" {
+		listenAddrString = "/ip4/0.0.0.0/tcp/0"
+	} else {
+		listenAddrString = *addr
+	}
+	listenAddr, _ := multiaddr.NewMultiaddr(listenAddrString)
+
+	var bootstrapPeers []multiaddr.Multiaddr
+
+	// Connect to bootstrap peers
+	if len(*bootstrap) > 0 {
+		bootstrapAddr, err := multiaddr.NewMultiaddr(*bootstrap)
+		if err != nil {
+			fmt.Errorf("Invalid bootstrap address: %s", err)
+		}
+		bootstrapPeers = append(bootstrapPeers, bootstrapAddr)
+	}
+
+	// Create host
+	privKey, err := LoadOrCreateKey("./peer_identity.key")
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		panic(err)
 	}
 
-	s := grpc.NewServer()
-	pb.RegisterMarketServer(s, &server{})
-	log.Printf("Server listening at %v", lis.Addr())
-	if err := s.Serve(lis); err != nil {
-		log.Fatalf("Error %v", err)
+	host, err := libp2p.New(libp2p.ListenAddrs(listenAddr), libp2p.Identity(privKey))
+	if err != nil {
+		fmt.Errorf("Failed to create host: %s", err)
 	}
+
+	for _, addr := range host.Addrs() {
+		fullAddr := fmt.Sprintf("%s/p2p/%s", addr, host.ID())
+		fmt.Println("Listen address:", fullAddr)
+	}
+	// Initialize the DHT
+	var kademliaDHT *dht.IpfsDHT
+	if *clientMode {
+		kademliaDHT, err = dht.New(ctx, host, dht.Mode(dht.ModeClient))
+	} else {
+		kademliaDHT, err = dht.New(ctx, host, dht.Mode(dht.ModeServer))
+	}
+	if err != nil {
+		fmt.Errorf("Failed to create DHT: %s", err)
+		return
+	}
+
+	// Connect the validator
+	kademliaDHT.Validator = &CustomValidator{}
+
+	// Bootstrap the DHT
+	if err := kademliaDHT.Bootstrap(ctx); err != nil {
+		fmt.Errorf("Failed to bootstrap DHT: %s", err)
+	}
+
+	connectToBootstrapPeers(ctx, host, bootstrapPeers)
+
+	// Create the user, connect to peers and run CLI
+	user := promptForUserInfo(ctx, kademliaDHT.PeerID())
+	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
+
+	fmt.Println("Looking for existence of peers on the network before proceeding...")
+	checkPeerExistence(ctx, host, kademliaDHT, routingDiscovery)
+	fmt.Println("Peer(s) found! proceeding with the application.")
+
+	runCLI(ctx, host, kademliaDHT, routingDiscovery, user)
 }
 
-// register that the a user holds a file, then add the user to the list of file holders
-func (s *server) RegisterFile(ctx context.Context, in *pb.RegisterFileRequest) (*emptypb.Empty, error) {
-	hash := in.GetFileHash()
+// promptForUserInfo creates a user struct based on information
+// entered by the user in the terminal
+//
+// Parameters:
+// - ctx: A context.Context for controlling the function's execution lifetime.
+//
+// Returns: A *pb.User containing the ID, name, IP address, port, and price of the user
+func promptForUserInfo(ctx context.Context, pID peer.ID) *pb.User {
+	var username string
+	fmt.Print("Enter username: ")
+	fmt.Scanln(&username)
 
-	files[hash] = append(files[hash], in)
-	fmt.Printf("Num of registered files: %d\n", len(files[hash]))
-	return &emptypb.Empty{}, nil
-}
+	// convert peer ID to string
+	pIDString := fmt.Sprintf("%v", pID)
 
-// CheckHolders returns a list of user names holding a file with a hash
-func (s *server) CheckHolders(ctx context.Context, in *pb.CheckHoldersRequest) (*pb.HoldersResponse, error) {
-	hash := in.GetFileHash()
+	fmt.Print("Enter a price for supplying files: ")
+	var price int64
+	fmt.Scanln(&price)
 
-	holders := files[hash]
-
-	users := make([]*pb.User, len(holders))
-	for i, holder := range holders {
-		users[i] = holder.GetUser()
+	user := &pb.User{
+		Id:    pIDString,
+		Name:  username,
+		Ip:    "localhost",
+		Port:  416320,
+		Price: price,
 	}
 
-	printHoldersMap()
+	return user
+}
 
-	return &pb.HoldersResponse{Holders: users}, nil
+// runCLI provides a command line interface for users to register files, check the holders for a file,
+// and check for connected peers
+//
+// Parameters:
+// - ctx: A context.Context for controlling the function's execution lifetime.
+// - host: The local host.Host instance.
+// - dht: A pointer to the dht.IpfsDHT instance used for direct DHT operations.
+// - routingDiscovery: A pointer to the drouting.RoutingDiscovery used for peer discovery.
+//
+// Returns: None
+func runCLI(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routingDiscovery *drouting.RoutingDiscovery, user *pb.User) {
+	for {
+		go peerDiscovery(ctx, host, dht, routingDiscovery)
+
+		fmt.Println("---------------------------------")
+		fmt.Println("1. Register a file")
+		fmt.Println("2. Check holders for a file")
+		fmt.Println("3. Check for connected peers")
+		fmt.Println("4. Exit")
+		fmt.Print("Option: ")
+		var choice int
+		_, err := fmt.Scanln(&choice)
+		if err != nil {
+			fmt.Println("Error: ", err)
+			continue
+		}
+
+		if choice == 4 {
+			return
+		}
+
+		switch choice {
+		case 1:
+			fmt.Print("Enter a file hash: ")
+			var fileHash string
+			_, err = fmt.Scanln(&fileHash)
+			if err != nil {
+				fmt.Errorf("Error: ", err)
+				continue
+			}
+			req := &pb.RegisterFileRequest{User: user, FileHash: fileHash}
+			registerFile(ctx, dht, req)
+		case 2:
+			fmt.Print("Enter a file hash: ")
+			var fileHash string
+			_, err = fmt.Scanln(&fileHash)
+			if err != nil {
+				fmt.Errorf("Error: ", err)
+				continue
+			}
+			checkReq := &pb.CheckHoldersRequest{FileHash: fileHash}
+			holdersResp, _ := checkHolders(ctx, dht, checkReq)
+			for _, user := range holdersResp.Holders {
+				fmt.Println("User:", user)
+			}
+		case 3:
+			printRoutingTable(dht)
+		case 4:
+			return
+		default:
+			fmt.Println("Unknown option: ", choice)
+		}
+
+		fmt.Println()
+	}
 }
