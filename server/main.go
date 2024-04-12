@@ -17,7 +17,13 @@
  * limitations under the License.
  *
  *
+ *	References:
+ *		https://gist.github.com/upperwal/38cd0c98e4a6b34c061db0ff26def9b9
+ *		https://ldej.nl/post/building-an-echo-application-with-libp2p/
+ *		https://github.com/libp2p/go-libp2p/blob/master/examples/chat-with-rendezvous/chat.go
+ *		https://github.com/libp2p/go-libp2p/blob/master/examples/pubsub/basic-chat-with-rendezvous/main.go
  */
+
 package main
 
 import (
@@ -26,73 +32,107 @@ import (
 	"fmt"
 	"log"
 	"net"
-
+	"sync"
 	pb "orcanet/market"
-
+	"github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
+	record "github.com/libp2p/go-libp2p-record"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/emptypb"
+	"orcanet/util"
+	"orcanet/market"
+	"orcanet/validator"
 )
 
 var (
 	port = flag.Int("port", 50051, "The server port")
 )
 
-// map file hashes to supplied files + prices
-var files = make(map[string][]*pb.RegisterFileRequest)
-
-// print the current holders map
-func printHoldersMap() {
-	for hash, holders := range files {
-		fmt.Printf("\nFile Hash: %s\n", hash)
-
-		for _, holder := range holders {
-			user := holder.GetUser()
-			fmt.Printf("Username: %s, Price: %d\n", user.GetName(), user.GetPrice())
-		}
-
-	}
-}
-
-type server struct {
-	pb.UnimplementedMarketServer
-}
-
 func main() {
 	flag.Parse()
+	ctx := context.Background()
+
+	//Generate or load private key for libp2p host, 
+	privKey, err := util.CheckOrCreatePrivateKey("privateKey.pem");
+	if(err != nil){
+		panic(err);
+	}
+
+	pubKey := privKey.GetPublic();
+
+	//Construct multiaddr from string and create host to listen on it
+	sourceMultiAddr, _ := multiaddr.NewMultiaddr("/ip4/0.0.0.0/tcp/44981")
+	opts := []libp2p.Option{
+		libp2p.ListenAddrStrings(sourceMultiAddr.String()),
+		libp2p.Identity(privKey), //derive id from private key
+	}
+	host, err := libp2p.New(opts...)
+	if err != nil {
+		panic(err)
+	}
+	log.Printf("Host ID: %s", host.ID())
+	log.Printf("Connect to me on:")
+	for _, addr := range host.Addrs() {
+		log.Printf("%s/p2p/%s", addr, host.ID())
+	}
+
+	bootstrapPeers := util.ReadBootstrapPeers()
+
+	// Start a DHT, for now we will start in client mode until we can implement a way to 
+	// detect if we are behind a NAT or not to run in server mode.
+	var validator record.Validator = validator.OrcaValidator{}
+	var options []dht.Option
+	options = append(options, dht.Mode(dht.ModeClient))
+	options = append(options, dht.ProtocolPrefix("orcanet/market"), dht.Validator(validator))
+	kDHT, err := dht.New(ctx, host, options...)
+	if err != nil {
+		panic(err)
+	}
+
+	// Bootstrap the DHT. In the default configuration, this spawns a Background
+	// thread that will refresh the peer table every five minutes.
+	log.Println("Bootstrapping the DHT")
+	if err = kDHT.Bootstrap(ctx); err != nil {
+		panic(err)
+	}
+
+	// Let's connect to the bootstrap nodes first. They will tell us about the
+	// other nodes in the network.
+	var wg sync.WaitGroup
+	for _, peerAddr := range bootstrapPeers {
+		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := host.Connect(ctx, *peerinfo); err != nil {
+				log.Println("WARNING: ", err)
+			} else {
+				log.Println("Connection established with bootstrap node:", *peerinfo)
+			}
+		}()
+	}
+	wg.Wait()
+
+	go util.DiscoverPeers(ctx, host, kDHT, "orcanet/market")
+
+	//Start gRPC server
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		panic(err)
 	}
 
 	s := grpc.NewServer()
-	pb.RegisterMarketServer(s, &server{})
+	serverStruct := market.Server{}
+	serverStruct.K_DHT = kDHT;
+	serverStruct.PrivKey = privKey;
+	serverStruct.PubKey = pubKey;
+	serverStruct.V = validator
+	pb.RegisterMarketServer(s, &serverStruct)
 	log.Printf("Server listening at %v", lis.Addr())
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Error %v", err)
 	}
-}
 
-// register that the a user holds a file, then add the user to the list of file holders
-func (s *server) RegisterFile(ctx context.Context, in *pb.RegisterFileRequest) (*emptypb.Empty, error) {
-	hash := in.GetFileHash()
-
-	files[hash] = append(files[hash], in)
-	fmt.Printf("Num of registered files: %d\n", len(files[hash]))
-	return &emptypb.Empty{}, nil
-}
-
-// CheckHolders returns a list of user names holding a file with a hash
-func (s *server) CheckHolders(ctx context.Context, in *pb.CheckHoldersRequest) (*pb.HoldersResponse, error) {
-	hash := in.GetFileHash()
-
-	holders := files[hash]
-
-	users := make([]*pb.User, len(holders))
-	for i, holder := range holders {
-		users[i] = holder.GetUser()
-	}
-
-	printHoldersMap()
-
-	return &pb.HoldersResponse{Holders: users}, nil
+	select {}
 }
