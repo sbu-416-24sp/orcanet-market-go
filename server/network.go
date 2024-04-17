@@ -95,6 +95,10 @@ func peerDiscovery(ctx context.Context, host host.Host, dht *dht.IpfsDHT, routin
 			continue
 		}
 
+		if dht.RoutingTable().Find(peer.ID) == "" {
+			continue
+		}
+
 		success := tryConnectWithBackoff(ctx, host, peer, 3, 1*time.Second)
 		if success {
 			peerDiscovered = true
